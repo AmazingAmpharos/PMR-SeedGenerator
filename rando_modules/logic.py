@@ -5,6 +5,7 @@ the game according to the settings chosen.
 import random
 from copy import deepcopy
 import logging
+from collections import defaultdict
 
 from db.node import Node
 from db.item import Item
@@ -13,7 +14,8 @@ from worldgraph \
     import generate as generate_world_graph,\
            get_node_identifier,\
            get_area_nodes,\
-           get_area_edges
+           get_area_edges,\
+           hashabledict
 from rando_modules.random_shop_prices import get_shop_price
 
 from rando_modules.simulate        \
@@ -71,12 +73,16 @@ def get_startingnode_id_from_startingmap_id(starting_map_id):
 
 def get_edge_target_node_id(edge):
     """Returns the node_id of a given edge's target node in string format"""
-    return edge.get("to").get("map") + "/" + str(edge.get("to").get("id"))
+    if "target_node_id" not in edge:
+        edge["target_node_id"] = f'{edge["to"]["map"]}/{edge["to"]["id"]}'
+    return edge["target_node_id"]
 
 
 def get_edge_origin_node_id(edge):
     """Returns the node_id of a given edge's origin node in string format"""
-    return edge.get("from").get("map") + "/" + str(edge.get("from").get("id"))
+    if "origin_node_id" not in edge:
+        edge["origin_node_id"] = f'{edge["from"]["map"]}/{edge["from"]["id"]}'
+    return edge["origin_node_id"]
 
 
 def is_itemlocation_replenishable(item_node):
@@ -91,9 +97,9 @@ def is_itemlocation_replenishable(item_node):
 def _depth_first_search(
     node_id:str,
     world_graph:dict,
-    reachable_node_ids:list,
+    reachable_node_ids:set,
     reachable_item_nodes:dict,
-    non_traversable_edges:list
+    non_traversable_edges:set,
 ):
     """
     Executes a DFS (depths first search) through the world graph, starting from
@@ -108,49 +114,54 @@ def _depth_first_search(
     Returns whether or not one or more pseudoitems have been found during
     graph traversal.
     """
-    logging.debug(f"> DFS node {node_id}")
+    #logging.debug(f"> DFS node {node_id}")
     found_new_pseudoitems = False
 
     # Node already visited? -> Return!
     node_checked_earlier = False
     if node_id in reachable_node_ids:
-        if any(    outgoing_edges in non_traversable_edges
-               for outgoing_edges in world_graph.get(node_id).get("edge_list")):
+        if non_traversable_edges[node_id]:
             node_checked_earlier = True
         else:
             return found_new_pseudoitems
     else:
-        reachable_node_ids.append(node_id)
-    logging.debug(f"DFS node_checked_earlier {node_checked_earlier}")
+        reachable_node_ids.add(node_id)
+    #logging.debug(f"DFS node_checked_earlier {node_checked_earlier}")
 
     # If the current node is an item node and thus not an entrance node,
     # add it to the list of reachable item nodes for later item placement
-    is_item_node = world_graph.get(node_id).get("node").key_name_item is not None
+    is_item_node = world_graph[node_id]["node"].key_name_item is not None
     if is_item_node and not node_checked_earlier:
-        reachable_item_nodes[node_id] = world_graph.get(node_id).get("node")
+        reachable_item_nodes[node_id] = world_graph[node_id]["node"]
 
     if not node_checked_earlier:
         # Get all outgoing edges
-        outgoing_edges = world_graph.get(node_id).get("edge_list")
+        outgoing_edges = world_graph[node_id]["edge_list"]
     else:
         # Get all formerly untraversable edges
-        outgoing_edges = [edge for edge in non_traversable_edges
-                               if get_edge_origin_node_id(edge) == node_id]
-    logging.debug(f"DFS outgoing_edges {outgoing_edges}")
+        outgoing_edges = non_traversable_edges[node_id]
+        non_traversable_edges[node_id] = set()
+    #logging.debug(f"DFS outgoing_edges {outgoing_edges}")
+
     for edge in outgoing_edges:
         # Check if all requirements for edge traversal are fulfilled
-        if all([r() for r in edge.get("reqs")]):
-            logging.debug(f"DFS edge requirements fullfilled {edge}")
+        all_reqs_fulfilled = True
+        for r in edge['reqs']:
+            if not r():
+                all_reqs_fulfilled = False
+                break
+        if all_reqs_fulfilled:
+            #logging.debug(f"DFS edge requirements fullfilled {edge}")
             # Add all pseudoitems provided by this edge to the inventory
-            if edge.get("pseudoitems") is not None:
-                add_to_inventory(edge.get("pseudoitems"))
+            if "pseudoitems" in edge:
+                add_to_inventory(edge["pseudoitems"])
                 found_new_pseudoitems = True
 
-            while edge in non_traversable_edges:
-                logging.debug(f"DFS remove edge from non_traversable_edges {edge}")
-                logging.debug(f"non_traversable_edges before {non_traversable_edges}")
-                non_traversable_edges.remove(edge)
-                logging.debug(f"non_traversable_edges after {non_traversable_edges}")
+            while edge in non_traversable_edges[node_id]:
+                #logging.debug(f"DFS remove edge from non_traversable_edges {edge}")
+                #logging.debug(f"non_traversable_edges[node_id] before {non_traversable_edges[node_id]}")
+                non_traversable_edges[node_id].remove(edge)
+                #logging.debug(f"non_traversable_edges[node_id] after {non_traversable_edges[node_id]}")
 
 
             # If edge requires multiuse item, remove one applicable item from
@@ -166,11 +177,8 @@ def _depth_first_search(
                                                             reachable_item_nodes,
                                                             non_traversable_edges)
                                      or found_new_pseudoitems)
-        elif edge not in non_traversable_edges:
-            logging.debug(f"DFS edge requirements not fullfilled {edge}")
-            non_traversable_edges.append(edge)
         else:
-            logging.debug(f"DFS edge requirements not fullfilled but already in non_traversable_edges {edge}")
+            non_traversable_edges[node_id].add(edge)
     return found_new_pseudoitems
 
 
@@ -178,10 +186,10 @@ def _find_new_nodes_and_edges(
     pool_misc_progression_items:list,
     pool_other_items:list,
     world_graph:dict,
-    reachable_node_ids:list,
+    reachable_node_ids:set,
     reachable_item_nodes:dict,
-    non_traversable_edges:list,
-    filled_item_nodes:list
+    non_traversable_edges:set,
+    filled_item_nodes:set
 ):
     """
     Try to traverse already found edges which could not be traversed before.
@@ -199,12 +207,13 @@ def _find_new_nodes_and_edges(
 
         # Re-traverse already found edges which could not be traversed before.
         node_ids_to_check = []
-        for edge in non_traversable_edges:
-            # Generate list of unique node_ids to check to avoid multiple
-            # checks of the same node
-            from_node_id = get_edge_origin_node_id(edge)
-            if from_node_id not in node_ids_to_check:
-                node_ids_to_check.append(from_node_id)
+        for edges in non_traversable_edges.values():
+            for edge in edges:
+                # Generate list of unique node_ids to check to avoid multiple
+                # checks of the same node
+                from_node_id = get_edge_origin_node_id(edge)
+                if from_node_id not in node_ids_to_check:
+                    node_ids_to_check.append(from_node_id)
 
         logging.debug(node_ids_to_check)
         for from_node_id in node_ids_to_check:
@@ -471,7 +480,7 @@ def _get_limit_items_to_dungeons(
         area_nodes = get_area_nodes(area_name)
         area_edges = get_area_edges(area_name)
         if area_name in additional_edges:
-            area_edges.extend(additional_edges.get(area_name))
+            area_edges.extend([hashabledict(x) for x in additional_edges.get(area_name)])
         if area_name in remove_edges:
             cleaned_area_edges = [x for x in area_edges if x not in remove_edges.get(area_name)]
             area_edges = cleaned_area_edges
@@ -483,7 +492,7 @@ def _get_limit_items_to_dungeons(
             # place partners manually into their nodes, so they can be found
             # by the _find_new_nodes_and_edges call and added to inventory
             for node_id in cur_area_graph:
-                if cur_area_graph.get(node_id).get("node").key_name_item == "Partner":
+                if cur_area_graph[node_id]["node"].key_name_item == "Partner":
                     cur_area_graph[node_id]["node"].current_item = cur_area_graph[node_id]["node"].vanilla_item
                     list_index = -1
                     for filled_node in limited_filled_item_nodes:
@@ -497,9 +506,9 @@ def _get_limit_items_to_dungeons(
         # Prepare data structures
         pool_progression_items = []
         pool_misc_progression_items = []
-        reachable_node_ids = []
+        reachable_node_ids = set()
         reachable_item_nodes = {}
-        non_traversable_edges = []
+        non_traversable_edges = defaultdict(set)
 
         cur_items_placed = []
         cur_items_overwritten = []
@@ -524,7 +533,7 @@ def _get_limit_items_to_dungeons(
 
         # Find initially reachable nodes within the world graph
         for edge in cur_area_graph.get(starting_node_id).get("edge_list"):
-            non_traversable_edges.append(edge)
+            non_traversable_edges[starting_node_id].add(edge)
 
         # Reset Mario's inventory
         if partners_in_default_locations:
@@ -684,7 +693,7 @@ def _generate_item_pools(
 
     # Pre-fill nodes that are not to be randomized
     for node_id in world_graph.keys():
-        current_node = world_graph.get(node_id).get("node")
+        current_node = world_graph[node_id]["node"]
         is_item_node = current_node.key_name_item
         if is_item_node: # and current_node not in all_item_nodes:
 
@@ -775,11 +784,13 @@ def _generate_item_pools(
             pre_filled_node_ids.append(get_node_identifier(node))
 
     # Check all remaining nodes for items to add to the pools
+    all_item_nodes_ids = {get_node_identifier(node) for node in all_item_nodes}
     for node_id in world_graph.keys():
-        current_node = world_graph.get(node_id).get("node")
+        current_node = world_graph[node_id]["node"]
         is_item_node = current_node.key_name_item
-        if is_item_node and current_node not in all_item_nodes:
+        if is_item_node and node_id not in all_item_nodes_ids:
             all_item_nodes.append(current_node)
+            all_item_nodes_ids.add(node_id)
 
             # Set current item to the one set during dungeon pre-fill
             if node_id in pre_filled_node_ids:
@@ -1059,9 +1070,9 @@ def _algo_forward_fill(
     # Declare and init additional data structures
     ## Data structures for graph traversal
     all_item_nodes = []
-    reachable_node_ids = []
+    reachable_node_ids = set()
     reachable_item_nodes = {}
-    non_traversable_edges = []
+    non_traversable_edges = defaultdict(set)
     ## Data structures for item pool
     pool_progression_items = []
     pool_other_items = []
@@ -1116,8 +1127,8 @@ def _algo_forward_fill(
 
     # Find initially reachable nodes within the world graph
     for edge in world_graph.get(starting_node_id).get("edge_list"):
-        non_traversable_edges.append(edge)
-    reachable_node_ids.append(starting_node_id)
+        non_traversable_edges[starting_node_id].add(edge)
+    reachable_node_ids.add(starting_node_id)
     pool_misc_progression_items, \
     pool_other_items, \
     reachable_node_ids, \
@@ -1250,29 +1261,28 @@ def _algo_forward_fill(
 
 def find_available_nodes(
     world_graph,
-    starting_map_id
+    starting_node_id
 ):
-    starting_node_id = get_startingnode_id_from_startingmap_id(starting_map_id)
-    reachable_node_ids = []
+    reachable_node_ids = set()
     reachable_item_nodes = {}
-    non_traversable_edges = []
-    filled_item_nodes = []
-    reachable_node_ids.append(starting_node_id)
-    for edge in world_graph.get(starting_node_id).get("edge_list"):
-        non_traversable_edges.append(edge)
+    non_traversable_edges = defaultdict(set)
+    filled_item_node_ids = set()
+    reachable_node_ids.add(starting_node_id)
+    for edge in world_graph[starting_node_id]["edge_list"]:
+        non_traversable_edges[starting_node_id].add(edge)
     return(find_empty_reachable_nodes(world_graph,
                                    reachable_node_ids,
                                    reachable_item_nodes,
                                    non_traversable_edges,
-                                   filled_item_nodes))
+                                   filled_item_node_ids))
 
 
 def find_empty_reachable_nodes(
     world_graph:dict,
-    reachable_node_ids:list,
+    reachable_node_ids:set,
     reachable_item_nodes:dict,
-    non_traversable_edges:list,
-    filled_item_nodes:list
+    non_traversable_edges:set,
+    filled_item_node_ids:set,
 ):
     """
     Try to traverse already found edges which could not be traversed before.
@@ -1281,22 +1291,15 @@ def find_empty_reachable_nodes(
     """
     logging.debug("++++ _find_new_nodes_and_edges called")
     empty_item_nodes = []
+    checked_item_node_ids = set()
     while True:
         found_new_items = False
 
-        # We require a copy here since we cannot iterate over a list and
-        # at the same time possibly delete entries from it (see DFS)
-        non_traversable_edges_cpy = non_traversable_edges.copy()
-        logging.debug(f"non_traversable_edges_cpy before {non_traversable_edges_cpy}")
-
         # Re-traverse already found edges which could not be traversed before.
-        node_ids_to_check = []
-        for edge in non_traversable_edges:
-            # Generate list of unique node_ids to check to avoid multiple
-            # checks of the same node
-            from_node_id = get_edge_origin_node_id(edge)
-            if from_node_id not in node_ids_to_check:
-                node_ids_to_check.append(from_node_id)
+        node_ids_to_check = set()
+        for from_node_id, edges in non_traversable_edges.items():
+            if edges:
+                node_ids_to_check.add(from_node_id)
 
         logging.debug(node_ids_to_check)
         for from_node_id in node_ids_to_check:
@@ -1304,23 +1307,24 @@ def find_empty_reachable_nodes(
                                                       world_graph,
                                                       reachable_node_ids,
                                                       reachable_item_nodes,
-                                                      non_traversable_edges_cpy)
+                                                      non_traversable_edges)
                                or found_new_items)
-        non_traversable_edges = non_traversable_edges_cpy.copy()
 
         # Check if an item node is reachable which already has an item placed.
-        for node_id, item_node in reachable_item_nodes.items():
+        for node_id in (reachable_item_nodes.keys() - checked_item_node_ids):
+            item_node = reachable_item_nodes[node_id]
             current_item = item_node.current_item
-            if current_item and get_node_identifier(item_node) not in [get_node_identifier(x) for x in filled_item_nodes]:
+            if current_item:
                 add_to_inventory(current_item.item_name)
                 found_new_items = True
-                filled_item_nodes.append(item_node)
+                filled_item_node_ids.add(node_id)
+            checked_item_node_ids.add(node_id)
         # Keep searching for new edges and nodes until we don't find any new
         # items which might open up even more edges and nodes
         if not found_new_items:
             break
-    for node_id, item_node in reachable_item_nodes.items():
-        if item_node not in filled_item_nodes:
+    for node_id, item_node in sorted(reachable_item_nodes.items()):
+        if node_id not in filled_item_node_ids:
             empty_item_nodes.append(item_node)
     return empty_item_nodes
 
@@ -1359,7 +1363,7 @@ def _algo_assumed_fill(
     pool_progression_items = []
     pool_other_items = []
     pool_misc_progression_items = []
-    filled_item_nodes = []
+    filled_item_node_ids = set()
 
     # Generate item pool
     print("Generating item pool...")
@@ -1391,11 +1395,13 @@ def _algo_assumed_fill(
         add_item_pouches
     )
 
+    starting_node_id = get_startingnode_id_from_startingmap_id(starting_map_id)
+
     print("Placing progression items...")
     #Place replenishable progression items
-    items_to_place = pool_misc_progression_items.copy()
     random.shuffle(pool_misc_progression_items)
-    for item in pool_misc_progression_items:
+    while pool_misc_progression_items:
+        item = pool_misc_progression_items.pop()
         _init_mario_inventory(
             starting_partners,
             starting_items,
@@ -1408,19 +1414,19 @@ def _algo_assumed_fill(
         )
         for item_ in pool_progression_items:
             add_to_inventory(item_.item_name)
-        items_to_place.remove(item)
-        for item_ in items_to_place:
+        for item_ in pool_misc_progression_items:
             add_to_inventory(item_.item_name)
-        candidate_locations = find_available_nodes(world_graph, starting_map_id)
-        for node in candidate_locations:
-            if not is_itemlocation_replenishable(node):
-                candidate_locations.remove(node)
+        candidate_locations = find_available_nodes(world_graph, starting_node_id)
+        candidate_locations = [node for node in candidate_locations if is_itemlocation_replenishable(node)]
         placement_location = random.choice(candidate_locations)
         placement_location.current_item = item
         node_identifier = get_node_identifier(placement_location)
         if "Shop" in node_identifier:
             placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
+        print(placement_location)
         clear_inventory()
+
+    print('----- 1 -----')
 
     #Divide progression item pool into two parts to reduce seed generation time
     #This is removing Star Pieces and all but three letters.
@@ -1429,24 +1435,21 @@ def _algo_assumed_fill(
     secondary_progression_items = []
     random.shuffle(pool_progression_items)
     if any(["StarPiece" in x.item_name for x in pool_progression_items]):
-        for item in [x for x in pool_progression_items if "StarPiece" in x.item_name]:
-            secondary_progression_items.append(item)
-        for item in secondary_progression_items:
-            pool_progression_items.remove(item)
+        secondary_progression_items = [x for x in pool_progression_items if "StarPiece" in x.item_name]
+        pool_progression_items = [x for x in pool_progression_items if "StarPiece" not in x.item_name]
     count = 0
-    extra_letters = []
+    extra_letters = set()
     for item in pool_progression_items:
         if item.item_name.find("Letter") != -1:
             count += 1
             if count > 3:
-                extra_letters.append(item)
-    for item in extra_letters:
-        pool_progression_items.remove(item)
-        pool_other_items.append(item)
+                extra_letters.add(item.item_name)
+                pool_other_items.append(item)
+    pool_progression_items = [x for x in pool_progression_items if x.item_name not in extra_letters]
 
     #Place other major progression items
-    items_to_place = pool_progression_items.copy()
-    for item in pool_progression_items:
+    while pool_progression_items:
+        item = pool_progression_items.pop()
         _init_mario_inventory(
             starting_partners,
             starting_items,
@@ -1459,16 +1462,18 @@ def _algo_assumed_fill(
         )
         for item_ in secondary_progression_items:
             add_to_inventory(item_.item_name)
-        items_to_place.remove(item)
-        for item_ in items_to_place:
+        for item_ in pool_progression_items:
             add_to_inventory(item_.item_name)
-        candidate_locations = find_available_nodes(world_graph, starting_map_id)
+        candidate_locations = find_available_nodes(world_graph, starting_node_id)
         placement_location = random.choice(candidate_locations)
         placement_location.current_item = item
         node_identifier = get_node_identifier(placement_location)
         if "Shop" in node_identifier:
             placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
+        print(placement_location)
         clear_inventory()
+
+    print('----- 2 -----')
 
     #Place Star Pieces
     _init_mario_inventory(
@@ -1481,24 +1486,25 @@ def _algo_assumed_fill(
             startwith_toybox_open,
             startwith_whale_open
         )
-    candidate_locations = find_available_nodes(world_graph, starting_map_id)
+    candidate_locations = find_available_nodes(world_graph, starting_node_id)
     random.shuffle(secondary_progression_items)
+    random.shuffle(candidate_locations)
     for item in secondary_progression_items:
         if get_starpiece_count() < 60:
-            placement_location = random.choice(candidate_locations)
+            placement_location = candidate_locations.pop()
             placement_location.current_item = item
-            candidate_locations.remove(placement_location)
             node_identifier = get_node_identifier(placement_location)
             if "Shop" in node_identifier:
                 placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
+            print(placement_location)
         else:
             pool_other_items.append(item)
 
 
     # Mark all unreachable nodes, which hold pre-filled items, as filled
     for item_node in all_item_nodes:
-        if item_node.current_item and get_node_identifier(item_node) not in [get_node_identifier(x) for x in filled_item_nodes]:
-            filled_item_nodes.append(item_node)
+        if item_node.current_item:
+            filled_item_node_ids.add(get_node_identifier(item_node))
 
     # Place all remaining items into still empty item nodes
     print("Placing Miscellaneous Items ...")
@@ -1513,7 +1519,7 @@ def _algo_assumed_fill(
 
         if (item_node_id == "KMR_06/ItemA"
         and do_randomize_coins
-        and item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]
+        and item_node_id not in filled_item_node_ids
         ):
             # Do not put coin on the Goomba Road sign due to glitchy graphics
             item_index = -1
@@ -1527,11 +1533,11 @@ def _algo_assumed_fill(
             else:
                 random_item = pool_other_items.pop(item_index)
             item_node.current_item = random_item
-            filled_item_nodes.append(item_node)
+            filled_item_node_ids.add(item_node_id)
             logging.debug(f"{item_node_id}: {random_item.item_name}")
             continue
 
-        if item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]:
+        if item_node_id not in filled_item_node_ids:
             # Place random remaining item here
             try:
                 random_item_id = random.randint(0, len(pool_other_items) - 1)
@@ -1547,18 +1553,18 @@ def _algo_assumed_fill(
                 item_node.current_item = random_item
                 if "Shop" in item_node_id:
                     item_node.current_item.base_price = get_shop_price(item_node, do_randomize_shops)
-                filled_item_nodes.append(item_node)
+                filled_item_node_ids.add(item_node_id)
                 logging.debug(f"{item_node_id}: {random_item.item_name}")
             except ValueError as err:
-                logging.warning(f"filled_item_nodes size: {len(filled_item_nodes)}")
+                logging.warning(f"filled_item_node_ids size: {len(filled_item_node_ids)}")
                 logging.warning(f"pool_other_items size: {len(pool_other_items)}")
-                logging.warning(f"nodes left: {len([item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]])}")
+                logging.warning(f"nodes left: {len([item_node_id not in filled_item_node_ids])}")
                 #raise
                 item_node.current_item = item_node.vanilla_item
                 logging.warning(f"{item_node_id}")
 
     # "Return" list of modified item nodes
-    item_placement.extend(filled_item_nodes)
+    item_placement.extend([node for node in all_item_nodes if node.current_item])
     
 def get_item_spheres(
     item_placement,
@@ -1576,13 +1582,13 @@ def get_item_spheres(
 
     # Declare and init additional data structures
     ## Data structures for graph traversal
-    reachable_node_ids = []
+    reachable_node_ids = set()
     reachable_item_nodes = {}
-    non_traversable_edges = []
+    non_traversable_edges = defaultdict(set)
     ## Data structures for item pool
     pool_other_items = []
     pool_misc_progression_items = []
-    filled_item_nodes = []
+    filled_item_nodes = set()
 
     print("Writing Item Spheres")
 
@@ -1602,8 +1608,8 @@ def get_item_spheres(
 
     # Find initially reachable nodes within the world graph
     for edge in world_graph.get(starting_node_id).get("edge_list"):
-        non_traversable_edges.append(edge)
-    reachable_node_ids.append(starting_node_id)
+        non_traversable_edges[starting_node_id].add(edge)
+    reachable_node_ids.add(starting_node_id)
 
     item_spheres_text = ""
     item_placement_map = {}
