@@ -13,7 +13,7 @@ from metadata.item_source_types import item_source_types
 class Node(Model):
 
     # MapArea this node is found in
-    map_area = ForeignKeyField(MapArea, backref = "nodes", lazy_load=False)
+    map_area = ForeignKeyField(MapArea, backref = "nodes")
 
     # Entrance data of the Map if this note represents an entrance
     entrance_id = IntegerField(null = True)
@@ -26,10 +26,10 @@ class Node(Model):
     item_source_type = IntegerField(null = True)
 
     # reference to item placed here in the unmodified game
-    vanilla_item = ForeignKeyField(Item, null = True, lazy_load=False)
+    vanilla_item = ForeignKeyField(Item, null = True)
 
     # reference to item placed here during randomization
-    current_item = ForeignKeyField(Item, null = True, lazy_load=False)
+    current_item = ForeignKeyField(Item, null = True)
 
     # vanilla item price if shop
     vanilla_price = IntegerField(null = True)
@@ -38,7 +38,7 @@ class Node(Model):
     item_index = IntegerField(null = True)
     price_index = IntegerField(null = True)
 
-    identifier = TextField(null = True)
+    identifier = CharField(null = True)
 
     def __str__(self):
         """Return string representation of current node"""
@@ -137,7 +137,8 @@ def create_nodes():
             current_item = None,
             vanilla_price = vanilla_price,
             item_index = data["value_id"],
-            price_index = price_index if price_index else None
+            price_index = price_index if price_index else None,
+            identifier = f'{map_area.name}/{data["name"]}'
         )
         print(node, created)
 
@@ -163,6 +164,7 @@ def create_nodes():
                     map_area = map_area,
                     entrance_id = entrance_id,
                     entrance_type = entrance_data["type"],
-                    entrance_name = entrance_data["verbose_name"]
+                    entrance_name = entrance_data["verbose_name"],
+                    identifier = f'{map_area.name}/{str(entrance_id)}'
                 )
                 print(node, created)

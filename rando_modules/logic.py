@@ -12,7 +12,6 @@ from db.item import Item
 from db.map_area import MapArea
 from worldgraph \
     import generate as generate_world_graph,\
-           get_node_identifier,\
            get_area_nodes,\
            get_area_edges,\
            hashabledict
@@ -90,7 +89,7 @@ def is_itemlocation_replenishable(item_node):
     Returns True if the location described by a given node is replenishable,
     that is, the item at this location can be acquired multiple times.
     """
-    node_id = get_node_identifier(item_node)
+    node_id = item_node.identifier
     return (node_id in replenishing_itemlocations)
 
 
@@ -235,7 +234,7 @@ def _find_new_nodes_and_edges(
         # If this is the case add item to inventory and remove node
         for node_id, item_node in reachable_item_nodes.items():
             current_item = item_node.current_item
-            if current_item and get_node_identifier(item_node) not in [get_node_identifier(x) for x in filled_item_nodes]:
+            if current_item and item_node.identifier not in [x.identifier for x in filled_item_nodes]:
                 current_item_name = current_item.item_name
                 add_to_inventory(current_item_name)
                 found_new_items = True
@@ -496,7 +495,7 @@ def _get_limit_items_to_dungeons(
                     cur_area_graph[node_id]["node"].current_item = cur_area_graph[node_id]["node"].vanilla_item
                     list_index = -1
                     for filled_node in limited_filled_item_nodes:
-                        if node_id == get_node_identifier(filled_node):
+                        if node_id == filled_node.identifier:
                             list_index = limited_filled_item_nodes.index(filled_node)
                     if list_index == -1:
                         raise ValueError
@@ -649,8 +648,8 @@ def _get_limit_items_to_dungeons(
         for area_goal in area_goals[area_name]:
             assert area_goal()
 
-    all_item_node_ids = [get_node_identifier(node) for node in all_item_nodes]
-    modified_nodes = [node for node in limited_filled_item_nodes if get_node_identifier(node) not in all_item_node_ids]
+    all_item_node_ids = [node.identifier for node in all_item_nodes]
+    modified_nodes = [node for node in limited_filled_item_nodes if node.identifier not in all_item_node_ids]
 
     return modified_nodes, items_placed, items_overwritten
 
@@ -697,7 +696,7 @@ def _generate_item_pools(
         is_item_node = current_node.key_name_item
         if is_item_node: # and current_node not in all_item_nodes:
 
-            current_node_id = get_node_identifier(current_node)
+            current_node_id = current_node.identifier
 
             # temp. don't rando coins in trees or bushes
             if (    current_node.vanilla_item.item_name == "Coin"
@@ -781,10 +780,10 @@ def _generate_item_pools(
                     hidden_block_mode
                 )
         for node in pre_filled_dungeon_nodes:
-            pre_filled_node_ids.append(get_node_identifier(node))
+            pre_filled_node_ids.append(node.identifier)
 
     # Check all remaining nodes for items to add to the pools
-    all_item_nodes_ids = {get_node_identifier(node) for node in all_item_nodes}
+    all_item_nodes_ids = {node.identifier for node in all_item_nodes}
     for node_id in world_graph.keys():
         current_node = world_graph[node_id]["node"]
         is_item_node = current_node.key_name_item
@@ -952,7 +951,7 @@ def place_progression_items_forward(
         while True:
             random_node_key = random.choice(list(reachable_item_nodes.keys()))
             random_node = reachable_item_nodes.pop(random_node_key)
-            if random_node_key not in [get_node_identifier(x) for x in filled_item_nodes]:
+            if random_node_key not in [x.identifier for x in filled_item_nodes]:
                 if not pool_progression_items:
                     # All keyitems already placed, search for replenish node
                     # for remaining misc items
@@ -980,7 +979,7 @@ def place_progression_items_forward(
         add_to_inventory(random_item.item_name)
         items_placed.append(random_item)
         items_overwritten.append(random_node.vanilla_item)
-        node_identifier = get_node_identifier(random_node)
+        node_identifier = random_node.identifier
         if "Shop" in node_identifier:
             random_node.current_item.base_price = get_shop_price(random_node, do_randomize_shops)
         filled_item_nodes.append(random_node)
@@ -1191,7 +1190,7 @@ def _algo_forward_fill(
 
     # Mark all unreachable nodes, which hold pre-filled items, as filled
     for item_node in all_item_nodes:
-        if item_node.current_item and get_node_identifier(item_node) not in [get_node_identifier(x) for x in filled_item_nodes]:
+        if item_node.current_item and item_node.identifier not in [x.identifier for x in filled_item_nodes]:
             filled_item_nodes.append(item_node)
 
     # Place all remaining items into still empty item nodes
@@ -1203,11 +1202,11 @@ def _algo_forward_fill(
     all_item_nodes.sort(key=lambda x: x.is_shop(), reverse=True)
 
     for item_node in all_item_nodes:
-        item_node_id = get_node_identifier(item_node)
+        item_node_id = item_node.identifier
 
         if (item_node_id == "KMR_06/ItemA"
         and do_randomize_coins
-        and item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]
+        and item_node_id not in [node.identifier for node in filled_item_nodes]
         ):
             # Do not put coin on the Goomba Road sign due to glitchy graphics
             item_index = -1
@@ -1225,7 +1224,7 @@ def _algo_forward_fill(
             logging.debug(f"{item_node_id}: {random_item.item_name}")
             continue
 
-        if item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]:
+        if item_node_id not in [node.identifier for node in filled_item_nodes]:
             # Place random remaining item here
             try:
                 random_item_id = random.randint(0, len(pool_other_items) - 1)
@@ -1246,7 +1245,7 @@ def _algo_forward_fill(
             except ValueError as err:
                 logging.warning(f"filled_item_nodes size: {len(filled_item_nodes)}")
                 logging.warning(f"pool_other_items size: {len(pool_other_items)}")
-                logging.warning(f"nodes left: {len([item_node_id not in [get_node_identifier(node) for node in filled_item_nodes]])}")
+                logging.warning(f"nodes left: {len([item_node_id not in [node.identifier for node in filled_item_nodes]])}")
                 #raise
                 item_node.current_item = item_node.vanilla_item
                 logging.warning(f"{item_node_id}")
@@ -1398,10 +1397,11 @@ def _algo_assumed_fill(
     starting_node_id = get_startingnode_id_from_startingmap_id(starting_map_id)
 
     print("Placing progression items...")
-    #Place replenishable progression items
-    random.shuffle(pool_misc_progression_items)
-    while pool_misc_progression_items:
-        item = pool_misc_progression_items.pop()
+    #Place progression items, both key and replenishable
+    pool_combined_progression_items = pool_progression_items + pool_misc_progression_items
+    random.shuffle(pool_combined_progression_items)
+    while pool_combined_progression_items:
+        item = pool_combined_progression_items.pop()
         _init_mario_inventory(
             starting_partners,
             starting_items,
@@ -1412,99 +1412,24 @@ def _algo_assumed_fill(
             startwith_toybox_open,
             startwith_whale_open
         )
-        for item_ in pool_progression_items:
-            add_to_inventory(item_.item_name)
-        for item_ in pool_misc_progression_items:
+        for item_ in pool_combined_progression_items:
             add_to_inventory(item_.item_name)
         candidate_locations = find_available_nodes(world_graph, starting_node_id)
-        candidate_locations = [node for node in candidate_locations if is_itemlocation_replenishable(node)]
+        if item.item_name in progression_miscitems_names:
+            candidate_locations = [node for node in candidate_locations if is_itemlocation_replenishable(node)]
         placement_location = random.choice(candidate_locations)
         placement_location.current_item = item
-        node_identifier = get_node_identifier(placement_location)
+        node_identifier = placement_location.identifier
         if "Shop" in node_identifier:
             placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
         print(placement_location)
         clear_inventory()
-
-    print('----- 1 -----')
-
-    #Divide progression item pool into two parts to reduce seed generation time
-    #This is removing Star Pieces and all but three letters.
-    #Star Pieces will be placed semi-smart later. Extra letters are treated as junk.
-
-    secondary_progression_items = []
-    random.shuffle(pool_progression_items)
-    if any(["StarPiece" in x.item_name for x in pool_progression_items]):
-        secondary_progression_items = [x for x in pool_progression_items if "StarPiece" in x.item_name]
-        pool_progression_items = [x for x in pool_progression_items if "StarPiece" not in x.item_name]
-    count = 0
-    extra_letters = set()
-    for item in pool_progression_items:
-        if item.item_name.find("Letter") != -1:
-            count += 1
-            if count > 3:
-                extra_letters.add(item.item_name)
-                pool_other_items.append(item)
-    pool_progression_items = [x for x in pool_progression_items if x.item_name not in extra_letters]
-
-    #Place other major progression items
-    while pool_progression_items:
-        item = pool_progression_items.pop()
-        _init_mario_inventory(
-            starting_partners,
-            starting_items,
-            partners_always_usable,
-            hidden_block_mode,
-            startwith_bluehouse_open,
-            startwith_flowergate_open,
-            startwith_toybox_open,
-            startwith_whale_open
-        )
-        for item_ in secondary_progression_items:
-            add_to_inventory(item_.item_name)
-        for item_ in pool_progression_items:
-            add_to_inventory(item_.item_name)
-        candidate_locations = find_available_nodes(world_graph, starting_node_id)
-        placement_location = random.choice(candidate_locations)
-        placement_location.current_item = item
-        node_identifier = get_node_identifier(placement_location)
-        if "Shop" in node_identifier:
-            placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
-        print(placement_location)
-        clear_inventory()
-
-    print('----- 2 -----')
-
-    #Place Star Pieces
-    _init_mario_inventory(
-            starting_partners,
-            starting_items,
-            partners_always_usable,
-            hidden_block_mode,
-            startwith_bluehouse_open,
-            startwith_flowergate_open,
-            startwith_toybox_open,
-            startwith_whale_open
-        )
-    candidate_locations = find_available_nodes(world_graph, starting_node_id)
-    random.shuffle(secondary_progression_items)
-    random.shuffle(candidate_locations)
-    for item in secondary_progression_items:
-        if get_starpiece_count() < 60:
-            placement_location = candidate_locations.pop()
-            placement_location.current_item = item
-            node_identifier = get_node_identifier(placement_location)
-            if "Shop" in node_identifier:
-                placement_location.current_item.base_price = get_shop_price(placement_location, do_randomize_shops)
-            print(placement_location)
-        else:
-            pool_other_items.append(item)
 
 
     # Mark all unreachable nodes, which hold pre-filled items, as filled
     for item_node in all_item_nodes:
         if item_node.current_item:
-            filled_item_node_ids.add(get_node_identifier(item_node))
+            filled_item_node_ids.add(item_node.identifier)
 
     # Place all remaining items into still empty item nodes
     print("Placing Miscellaneous Items ...")
@@ -1515,7 +1440,7 @@ def _algo_assumed_fill(
     all_item_nodes.sort(key=lambda x: x.is_shop(), reverse=True)
 
     for item_node in all_item_nodes:
-        item_node_id = get_node_identifier(item_node)
+        item_node_id = item_node.identifier
 
         if (item_node_id == "KMR_06/ItemA"
         and do_randomize_coins
@@ -1616,7 +1541,7 @@ def get_item_spheres(
     mario_item_history = get_item_history()
 
     for n in item_placement:
-        item_placement_map[get_node_identifier(n)] = n
+        item_placement_map[n.identifier] = n
     item_spheres_text += 'Starting Items:\n'
     for item in mario_item_history:
         item_suffix = ""
@@ -1647,7 +1572,7 @@ def get_item_spheres(
 
         while reachable_item_nodes:
             node = reachable_item_nodes.pop(next(iter(reachable_item_nodes)))
-            item = item_placement_map[get_node_identifier(node)].current_item
+            item = item_placement_map[node.identifier].current_item
             node_long_name = f'({verbose_area_names[node.map_area.name[:3]]}) {node.map_area.verbose_name} - {verbose_item_locations[node.map_area.name][node.key_name_item]}'
 
             item_suffix = ""
@@ -1656,6 +1581,8 @@ def get_item_spheres(
             item_spheres_text += f'    ({node_long_name}): {item.item_name}{item_suffix}\n'
             add_to_inventory(item.item_name)
         sphere += 1
+
+    assert has_item("YOUWIN")
     return item_spheres_text
 
 
